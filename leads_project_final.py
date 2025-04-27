@@ -50,19 +50,28 @@ agg_leads = leads_df.groupby('ASSIGNED_BY_ID') \
         .reset_index() \
         .rename(columns={'ID':'number_of_leads'})
 
-agg_deals = deals_list.groupby('ASSIGNED_BY_ID') \
+# Проверяем, есть ли сделки
+if not deals_list.empty:
+    # Если сделки есть, продолжаем обработку
+    agg_deals = deals_list.groupby('ASSIGNED_BY_ID') \
         .agg({'ID':'count'}) \
         .reset_index() \
         .rename(columns={'ID':'number_of_deals'})
+else:
+    # Если сделок нет, создаём пустую таблицу с нужными столбцами
+    agg_deals = pd.DataFrame(columns=['ASSIGNED_BY_ID', 'number_of_deals'])
+    agg_deals['ASSIGNED_BY_ID'] = leads_df['ASSIGNED_BY_ID'].unique()  # Заполняем уникальными ID менеджеров
+    agg_deals['number_of_deals'] = 0  # Если сделок нет, количество сделок = 0
 
-full_agg_data = agg_leads.merge(agg_deals,how='left', on='ASSIGNED_BY_ID')
+# Объединяем агрегации по лидам и сделкам
+full_agg_data = agg_leads.merge(agg_deals, how='left', on='ASSIGNED_BY_ID')
 
+# Остальная обработка остаётся прежней
 datetime_cols = full_agg_data.select_dtypes(include=['datetime', 'datetimetz']).columns
 for col in datetime_cols:
     median_value = full_agg_data[col].dropna().median()
     full_agg_data[col] = full_agg_data[col].fillna(median_value)
 
-# Все остальные (числовые, строковые и т.п.)
 other_cols = full_agg_data.columns.difference(datetime_cols)
 for col in other_cols:
     if pd.api.types.is_numeric_dtype(full_agg_data[col]):
@@ -70,9 +79,9 @@ for col in other_cols:
     else:
         full_agg_data[col] = full_agg_data[col].fillna('0')
 
-full_agg_data['CR%'] = round(full_agg_data.number_of_deals/full_agg_data.number_of_leads,2) * 100
+full_agg_data['CR%'] = round(full_agg_data.number_of_deals / full_agg_data.number_of_leads, 2) * 100
 full_agg_data = full_agg_data.merge(users_df, left_on='ASSIGNED_BY_ID', right_on='ID')
-full_agg_data = full_agg_data[['CR%','FULL_NAME','time_taken_in_work']]
+full_agg_data = full_agg_data[['CR%', 'FULL_NAME', 'time_taken_in_work']]
 
 
 
@@ -156,7 +165,7 @@ sns.heatmap(stage_by_manager_data,
             annot=True,  
             fmt='d',     
             cmap='Blues',  
-            cbar_kws={'label': 'Количество лидов'},  
+            cbar=False,  
             annot_kws={"size": 12, "weight": 'bold', "color": 'black'},  
             linewidths=0.5,  
             linecolor='gray',  
@@ -222,5 +231,5 @@ message_text = (
 
 
 
-send_graph_to_telegram("output_image.png", chat_ids)
+send_graph_to_telegram("C:/Users/Андрей/computer/Desktop/Zvilnymo_analytics/leads_project/output_image.png", chat_ids)
 send_message(message_text, chat_ids)
