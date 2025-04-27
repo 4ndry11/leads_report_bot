@@ -222,5 +222,5 @@ message_text = (
 
 
 
-send_graph_to_telegram("C:/Users/Андрей/computer/Desktop/Zvilnymo_analytics/leads_project/output_image.png", chat_ids)
+send_graph_to_telegram("output_image.png", chat_ids)
 send_message(message_text, chat_ids)
