@@ -4,6 +4,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from b24 import B24
+import os
     
 
 yesterday = (datetime.today() - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -192,7 +193,7 @@ fig.savefig('output_image.png', bbox_inches='tight', dpi=300)
 
 #Отправляем данные в телеграм бота
 
-TOKEN = "8024442492:AAEOg60JnXOC4OpIHqwAWeLwptQMrHwHQ3o"
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 chat_ids = [727013047, 718885452, 6775209607, 1139941966, 332270956]
 
