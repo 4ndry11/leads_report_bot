@@ -5,6 +5,57 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from b24 import B24
 import os
+
+
+# ФУНКЦИЯ ДЛЯ РАСЧЕТА РАБОЧЕГО ВРЕМЕНИ (исключая только ночные часы)
+def calculate_working_hours(start_time, end_time, work_start_hour=9, work_end_hour=21):
+    """
+    Рассчитывает количество рабочих часов между двумя датами,
+    исключая ТОЛЬКО ночные часы (по умолчанию с 21:00 до 09:00)
+    Все дни недели считаются рабочими (включая субботу и воскресенье)
+
+    Args:
+        start_time: datetime - время создания лида
+        end_time: datetime - время взятия в работу
+        work_start_hour: int - начало рабочего дня (по умолчанию 9)
+        work_end_hour: int - конец рабочего дня (по умолчанию 21)
+
+    Returns:
+        timedelta - рабочее время
+    """
+    if pd.isna(start_time) or pd.isna(end_time):
+        return pd.NaT
+
+    total_working_seconds = 0
+    current_time = start_time
+
+    while current_time < end_time:
+        current_hour = current_time.hour
+
+        # Если текущее время в рабочих часах (09:00 - 21:00)
+        if work_start_hour <= current_hour < work_end_hour:
+            # Находим конец рабочего периода в этот день
+            end_of_work_today = current_time.replace(hour=work_end_hour, minute=0, second=0, microsecond=0)
+
+            # Берем минимум из конца рабочего дня и времени взятия в работу
+            period_end = min(end_of_work_today, end_time)
+
+            # Добавляем рабочие секунды
+            working_seconds = (period_end - current_time).total_seconds()
+            total_working_seconds += working_seconds
+
+            current_time = period_end
+        else:
+            # Если сейчас нерабочее время (ночь), переходим к началу следующего рабочего дня
+            if current_hour < work_start_hour:
+                # Если время до начала рабочего дня (00:00 - 09:00)
+                current_time = current_time.replace(hour=work_start_hour, minute=0, second=0, microsecond=0)
+            else:
+                # Если время после конца рабочего дня (21:00 - 23:59), переходим к следующему дню
+                next_day = current_time + timedelta(days=1)
+                current_time = next_day.replace(hour=work_start_hour, minute=0, second=0, microsecond=0)
+
+    return timedelta(seconds=total_working_seconds)
     
 
 yesterday = (datetime.today() - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -18,8 +69,11 @@ leads_df['DATE_CREATE'] = pd.to_datetime(leads_df['DATE_CREATE'])
 leads_df['taken_in_work'] = pd.to_datetime(leads_df['UF_CRM_1745414446'])
 leads_df = leads_df.drop('UF_CRM_1745414446', axis=1)
 
-# Вычисляем разницу во времени
-leads_df['time_taken_in_work'] = leads_df['taken_in_work'] - leads_df['DATE_CREATE']
+# Вычисляем РАБОЧЕЕ время (исключая ночные часы 21:00-09:00)
+leads_df['time_taken_in_work'] = leads_df.apply(
+    lambda row: calculate_working_hours(row['DATE_CREATE'], row['taken_in_work']),
+    axis=1
+)
 
 #Выгружаем данные по сделкам из СRM
 category_id = 0
@@ -45,11 +99,39 @@ users_df = pd.DataFrame(items_users)[['ID', 'NAME', 'LAST_NAME', 'SECOND_NAME']]
 users_df['FULL_NAME'] = users_df[['NAME', 'LAST_NAME', 'SECOND_NAME']].fillna('').agg(' '.join, axis=1).str.strip()
 users_df = users_df[['ID', 'FULL_NAME']]
 
-#Считаю конверсии
+#Считаю конверсии с учетом рабочего времени и обрезки выбросов
+
+# 1. Фильтруем только лиды с заполненным временем взятия в работу (исключаем NaT)
+leads_with_time = leads_df[leads_df['time_taken_in_work'].notna()].copy()
+
+# 2. Конвертируем timedelta в секунды для обрезки выбросов
+leads_with_time['time_in_seconds'] = leads_with_time['time_taken_in_work'].dt.total_seconds()
+
+# 3. Определяем границы для обрезки выбросов (1%-90%)
+if len(leads_with_time) > 0:
+    lower_bound = leads_with_time['time_in_seconds'].quantile(0.01)
+    upper_bound = leads_with_time['time_in_seconds'].quantile(0.90)
+
+    # 4. Применяем обрезку выбросов
+    leads_trimmed = leads_with_time[
+        (leads_with_time['time_in_seconds'] >= lower_bound) &
+        (leads_with_time['time_in_seconds'] <= upper_bound)
+    ].copy()
+else:
+    leads_trimmed = leads_with_time.copy()
+
+# 5. Рассчитываем агрегации (медиану по обрезанным данным, количество по всем лидам)
 agg_leads = leads_df.groupby('ASSIGNED_BY_ID') \
-        .agg({'ID':'count','time_taken_in_work':'median'}) \
+        .agg({'ID':'count'}) \
         .reset_index() \
         .rename(columns={'ID':'number_of_leads'})
+
+# Добавляем медиану времени реакции из обрезанных данных
+if len(leads_trimmed) > 0:
+    time_medians = leads_trimmed.groupby('ASSIGNED_BY_ID')['time_taken_in_work'].median().reset_index()
+    agg_leads = agg_leads.merge(time_medians, on='ASSIGNED_BY_ID', how='left')
+else:
+    agg_leads['time_taken_in_work'] = pd.NaT
 
 # Проверяем, есть ли сделки
 if not deals_list.empty:
@@ -80,7 +162,7 @@ for col in other_cols:
     else:
         full_agg_data[col] = full_agg_data[col].fillna('0')
 
-full_agg_data['CR%'] = round(full_agg_data.number_of_deals / full_agg_data.number_of_leads, 2) * 100
+full_agg_data['CR%'] = round(full_agg_data.number_of_deals / full_agg_data.number_of_leads * 100, 2)
 full_agg_data = full_agg_data.merge(users_df, left_on='ASSIGNED_BY_ID', right_on='ID')
 full_agg_data = full_agg_data[['CR%', 'FULL_NAME', 'time_taken_in_work']]
 
@@ -208,10 +290,24 @@ def send_graph_to_telegram(image_path, chat_ids):
         with open(image_path, "rb") as photo:  # Открываем файл внутри цикла
             requests.post(url, data={"chat_id": chat_id}, files={"photo": photo})
             
-# Получаем медиану времени по отделу
-median_reaction = leads_df['time_taken_in_work'].median()
-median_reaction_str = str(pd.to_timedelta(median_reaction)).split()[-1]
-median_reaction_seconds = pd.to_timedelta(median_reaction).total_seconds()
+# Функция для форматирования времени без микросекунд
+def format_time_no_microseconds(td):
+    """Форматирует timedelta без микросекунд (только до секунд)"""
+    if pd.isna(td):
+        return "N/A"
+    total_seconds = int(td.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+# Получаем медиану времени по отделу (из обрезанных данных)
+if len(leads_trimmed) > 0:
+    median_reaction = leads_trimmed['time_taken_in_work'].median()
+    median_reaction_str = format_time_no_microseconds(median_reaction)
+    median_reaction_seconds = pd.to_timedelta(median_reaction).total_seconds()
+else:
+    median_reaction_str = "N/A"
+    median_reaction_seconds = 0
 
 message_text = (
     f"☀️ Доброе утро!\n"
@@ -222,9 +318,9 @@ message_text = (
     f"<b>Конверсии с лида в продажу и время реакции:</b>\n\n" +
     "\n────────────\n".join(
         f"👤 <b>{row['FULL_NAME']}</b>\n"
-        f"   CR%: <b>{row['CR%']}%</b> {'🔴' if row['CR%'] < 0.1 else ''}\n"
-        f"   Швидкість реакції: <b>{str(pd.to_timedelta(row['time_taken_in_work'])).split()[-1]}</b> "
-        f"{'⏰' if pd.to_timedelta(row['time_taken_in_work']).total_seconds() > 20*60 else ''}"
+        f"   CR%: <b>{row['CR%']:.2f}%</b> {'🔴' if row['CR%'] < 0.1 else ''}\n"
+        f"   Швидкість реакції: <b>{format_time_no_microseconds(row['time_taken_in_work'])}</b> "
+        f"{'⏰' if pd.notna(row['time_taken_in_work']) and pd.to_timedelta(row['time_taken_in_work']).total_seconds() > 20*60 else ''}"
         for _, row in full_agg_data.iterrows()
     )
 )
