@@ -99,20 +99,19 @@ users_df = pd.DataFrame(items_users)[['ID', 'NAME', 'LAST_NAME', 'SECOND_NAME']]
 users_df['FULL_NAME'] = users_df[['NAME', 'LAST_NAME', 'SECOND_NAME']].fillna('').agg(' '.join, axis=1).str.strip()
 users_df = users_df[['ID', 'FULL_NAME']]
 
-#Считаю конверсии с учетом рабочего времени и обрезки выбросов
+#Считаю конверсии с учетом рабочего времени
+# ДЛЯ ОТДЕЛА: с обрезкой выбросов 1%-95%
+# ДЛЯ МЕНЕДЖЕРОВ: без обрезки
 
-# 1. Фильтруем только лиды с заполненным временем взятия в работу (исключаем NaT)
+# Фильтруем только лиды с заполненным временем взятия в работу (исключаем NaT)
 leads_with_time = leads_df[leads_df['time_taken_in_work'].notna()].copy()
-
-# 2. Конвертируем timedelta в секунды для обрезки выбросов
 leads_with_time['time_in_seconds'] = leads_with_time['time_taken_in_work'].dt.total_seconds()
 
-# 3. Определяем границы для обрезки выбросов (1%-90%)
+# Обрезка выбросов ДЛЯ ОТДЕЛА (1%-95%)
 if len(leads_with_time) > 0:
     lower_bound = leads_with_time['time_in_seconds'].quantile(0.01)
-    upper_bound = leads_with_time['time_in_seconds'].quantile(0.90)
+    upper_bound = leads_with_time['time_in_seconds'].quantile(0.95)
 
-    # 4. Применяем обрезку выбросов
     leads_trimmed = leads_with_time[
         (leads_with_time['time_in_seconds'] >= lower_bound) &
         (leads_with_time['time_in_seconds'] <= upper_bound)
@@ -120,15 +119,15 @@ if len(leads_with_time) > 0:
 else:
     leads_trimmed = leads_with_time.copy()
 
-# 5. Рассчитываем агрегации (медиану по обрезанным данным, количество по всем лидам)
+# Рассчитываем агрегации (количество лидов)
 agg_leads = leads_df.groupby('ASSIGNED_BY_ID') \
         .agg({'ID':'count'}) \
         .reset_index() \
         .rename(columns={'ID':'number_of_leads'})
 
-# Добавляем медиану времени реакции из обрезанных данных
-if len(leads_trimmed) > 0:
-    time_medians = leads_trimmed.groupby('ASSIGNED_BY_ID')['time_taken_in_work'].median().reset_index()
+# Добавляем медиану времени реакции ДЛЯ МЕНЕДЖЕРОВ (БЕЗ обрезки)
+if len(leads_with_time) > 0:
+    time_medians = leads_with_time.groupby('ASSIGNED_BY_ID')['time_taken_in_work'].median().reset_index()
     agg_leads = agg_leads.merge(time_medians, on='ASSIGNED_BY_ID', how='left')
 else:
     agg_leads['time_taken_in_work'] = pd.NaT
@@ -289,6 +288,12 @@ def send_graph_to_telegram(image_path, chat_ids):
     for chat_id in chat_ids:
         with open(image_path, "rb") as photo:  # Открываем файл внутри цикла
             requests.post(url, data={"chat_id": chat_id}, files={"photo": photo})
+
+def send_document_to_telegram(file_path, chat_ids):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendDocument"
+    for chat_id in chat_ids:
+        with open(file_path, "rb") as document:  # Открываем файл внутри цикла
+            requests.post(url, data={"chat_id": chat_id}, files={"document": document})
             
 # Функция для форматирования времени без микросекунд
 def format_time_no_microseconds(td):
@@ -300,7 +305,25 @@ def format_time_no_microseconds(td):
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-# Получаем медиану времени по отделу (из обрезанных данных)
+# Создаем Excel файл с детальными данными по лидам
+excel_data = leads_df[['ID', 'ASSIGNED_BY_ID', 'DATE_CREATE', 'taken_in_work', 'time_taken_in_work']].copy()
+excel_data = excel_data.merge(users_df, left_on='ASSIGNED_BY_ID', right_on='ID', how='left', suffixes=('_lead', '_user'))
+
+# Формируем колонки для Excel
+excel_data['Ссылка'] = excel_data['ID_lead'].apply(lambda x: f'https://ua.zvilnymo.com.ua/crm/lead/details/{x}/')
+excel_data['Менеджер'] = excel_data['FULL_NAME']
+excel_data['Когда был создан'] = excel_data['DATE_CREATE'].dt.strftime('%Y-%m-%d %H:%M:%S')
+excel_data['Когда взял в работу'] = excel_data['taken_in_work'].apply(lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(x) else 'N/A')
+excel_data['Сколько времени висел лид'] = excel_data['time_taken_in_work'].apply(format_time_no_microseconds)
+
+# Оставляем только нужные колонки
+excel_output = excel_data[['Ссылка', 'Менеджер', 'Когда был создан', 'Когда взял в работу', 'Сколько времени висел лид']]
+excel_filename = f'leads_detail_{yesterday_date}.xlsx'
+excel_output.to_excel(excel_filename, index=False, engine='openpyxl')
+
+print(f"Excel файл сохранен: {excel_filename}")
+
+# Получаем медиану времени по отделу (используем обрезанные данные для отдела)
 if len(leads_trimmed) > 0:
     median_reaction = leads_trimmed['time_taken_in_work'].median()
     median_reaction_str = format_time_no_microseconds(median_reaction)
@@ -330,3 +353,4 @@ message_text = (
 
 send_graph_to_telegram("output_image.png", chat_ids)
 send_message(message_text, chat_ids)
+send_document_to_telegram(excel_filename, chat_ids)
