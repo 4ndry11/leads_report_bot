@@ -60,8 +60,11 @@ def calculate_working_hours(start_time, end_time, work_start_hour=9, work_end_ho
 
 yesterday = (datetime.today() - timedelta(days=1)).strftime('%Y-%m-%d')
 #Выгружаем данные по лидам из СRM
-b24 = B24('ua.zvilnymo.com.ua', 596, 'l13ymwtftv37nmdq')
-leads = b24.get_list('crm.lead.list', b24_filter={'>=DATE_CREATE': f'{yesterday}T00:00:01', '<=DATE_CREATE': f'{yesterday}T23:59:59'}, 
+B24_DOMAIN = os.getenv('B24_DOMAIN')
+B24_USER_ID = int(os.getenv('B24_USER_ID'))
+B24_TOKEN_LEADS = os.getenv('B24_TOKEN_LEADS')
+b24 = B24(B24_DOMAIN, B24_USER_ID, B24_TOKEN_LEADS)
+leads = b24.get_list('crm.lead.list', b24_filter={'>=DATE_CREATE': f'{yesterday}T00:00:01', '<=DATE_CREATE': f'{yesterday}T23:59:59'},
                     select=['ID','STATUS_ID','ASSIGNED_BY_ID','DATE_CREATE','UTM_SOURCE','UF_CRM_1745414446'])
 leads_df = pd.DataFrame(leads)
 
@@ -93,7 +96,8 @@ deals = b24.get_list("crm.deal.list", b24_filter=deal_filter, select=select_fiel
 deals_list = pd.DataFrame(deals)
 
 #Выгружаем данные по менеджерам из СRM
-b24 = B24('ua.zvilnymo.com.ua', 596, 'vt8sovzu4o2y28j7')
+B24_TOKEN_USERS = os.getenv('B24_TOKEN_USERS')
+b24 = B24(B24_DOMAIN, B24_USER_ID, B24_TOKEN_USERS)
 items_users = b24.get_list('user.get', select=['ID','NAME', 'LAST_NAME', 'SECOND_NAME'])
 users_df = pd.DataFrame(items_users)[['ID', 'NAME', 'LAST_NAME', 'SECOND_NAME']]
 users_df['FULL_NAME'] = users_df[['NAME', 'LAST_NAME', 'SECOND_NAME']].fillna('').agg(' '.join, axis=1).str.strip()
@@ -168,7 +172,8 @@ full_agg_data = full_agg_data[['CR%', 'FULL_NAME', 'time_taken_in_work']]
 
 
 #Выгружаем данные по стадиям из СRM
-b24 = B24('ua.zvilnymo.com.ua', 596, 'hfyrvmf8dqrff3ph')
+B24_TOKEN_STATUS = os.getenv('B24_TOKEN_STATUS')
+b24 = B24(B24_DOMAIN, B24_USER_ID, B24_TOKEN_STATUS)
 status_list = b24.get_list('crm.status.list', select=['ID','NAME'])
 df_status = pd.DataFrame(status_list)
 df_status = df_status[['STATUS_ID','NAME']]
@@ -310,7 +315,8 @@ excel_data = leads_df[['ID', 'ASSIGNED_BY_ID', 'DATE_CREATE', 'taken_in_work', '
 excel_data = excel_data.merge(users_df, left_on='ASSIGNED_BY_ID', right_on='ID', how='left', suffixes=('_lead', '_user'))
 
 # Формируем колонки для Excel
-excel_data['Ссылка'] = excel_data['ID_lead'].apply(lambda x: f'https://ua.zvilnymo.com.ua/crm/lead/details/{x}/')
+B24_CRM_URL = os.getenv('B24_CRM_URL')
+excel_data['Ссылка'] = excel_data['ID_lead'].apply(lambda x: f'{B24_CRM_URL}/crm/lead/details/{x}/')
 excel_data['Менеджер'] = excel_data['FULL_NAME']
 excel_data['Когда был создан'] = excel_data['DATE_CREATE'].dt.strftime('%Y-%m-%d %H:%M:%S')
 excel_data['Когда взял в работу'] = excel_data['taken_in_work'].apply(lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(x) else 'N/A')
